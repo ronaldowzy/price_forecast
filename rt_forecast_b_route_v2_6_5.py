@@ -262,10 +262,20 @@ COL_TIE_FC = "联络线受电负荷(预测)"
 COL_WIND_FC = "风电总加(预测)"
 COL_PV_FC = "光伏总加(预测)"
 
+# Additional load components that should be included in net load calculation
+COL_NON_MARKET_NUCLEAR_FC = "非市场化核电总加(预测)"
+COL_SELF_SUPPLY_UNITS_FC = "自备机组总加(预测)"
+COL_LOCAL_POWER_PLANT_FC = "地方电厂发电总加(预测)"
+
 COL_LOAD_ACT = "直调负荷(实际)"
 COL_TIE_ACT = "联络线受电负荷(实际)"
 COL_WIND_ACT = "风电总加(实际)"
 COL_PV_ACT = "光伏总加(实际)"
+
+# Additional actual load components
+COL_NON_MARKET_NUCLEAR_ACT = "非市场化核电总加(实际)"
+COL_SELF_SUPPLY_UNITS_ACT = "自备机组总加(实际)"
+COL_LOCAL_POWER_PLANT_ACT = "地方电厂发电总加(实际)"
 
 COL_PS_ACT = "抽蓄(实际)"  # 抽水蓄能(实际), MW, 正负含义以数据为准
 
@@ -426,8 +436,20 @@ def add_netload(df: pd.DataFrame, is_history: bool) -> pd.DataFrame:
     df["Tie_fc"] = df[COL_TIE_FC]
     df["Wind_fc"] = pd.to_numeric(df[COL_WIND_FC], errors="coerce")
     df["PV_fc"] = pd.to_numeric(df[COL_PV_FC], errors="coerce")
+    
+    # Add additional load components with fallback to 0 if not present
+    df["NonMarketNuclear_fc"] = pd.to_numeric(df.get(COL_NON_MARKET_NUCLEAR_FC, 0.0), errors="coerce")
+    df["SelfSupplyUnits_fc"] = pd.to_numeric(df.get(COL_SELF_SUPPLY_UNITS_FC, 0.0), errors="coerce")
+    df["LocalPowerPlant_fc"] = pd.to_numeric(df.get(COL_LOCAL_POWER_PLANT_FC, 0.0), errors="coerce")
 
-    df["NetLoad_fc"] = df["Load_fc"] - df["Wind_fc"] - df["PV_fc"] - df["Tie_fc"]
+    # Updated net load calculation including additional components
+    df["NetLoad_fc"] = (df["Load_fc"] 
+                        - df["Wind_fc"] 
+                        - df["PV_fc"] 
+                        - df["Tie_fc"]
+                        - df["NonMarketNuclear_fc"]
+                        - df["SelfSupplyUnits_fc"]
+                        - df["LocalPowerPlant_fc"])
 
     if is_history:
         require_cols(df, [COL_LOAD_ACT, COL_TIE_ACT, COL_WIND_ACT, COL_PV_ACT], where="actual fields")
@@ -438,8 +460,20 @@ def add_netload(df: pd.DataFrame, is_history: bool) -> pd.DataFrame:
         df["Tie_act"] = df[COL_TIE_ACT]
         df["Wind_act"] = pd.to_numeric(df[COL_WIND_ACT], errors="coerce")
         df["PV_act"] = pd.to_numeric(df[COL_PV_ACT], errors="coerce")
+        
+        # Add additional actual load components with fallback to 0 if not present
+        df["NonMarketNuclear_act"] = pd.to_numeric(df.get(COL_NON_MARKET_NUCLEAR_ACT, 0.0), errors="coerce")
+        df["SelfSupplyUnits_act"] = pd.to_numeric(df.get(COL_SELF_SUPPLY_UNITS_ACT, 0.0), errors="coerce")
+        df["LocalPowerPlant_act"] = pd.to_numeric(df.get(COL_LOCAL_POWER_PLANT_ACT, 0.0), errors="coerce")
 
-        df["NetLoad_act"] = df["Load_act"] - df["Wind_act"] - df["PV_act"] - df["Tie_act"]
+        # Updated actual net load calculation including additional components
+        df["NetLoad_act"] = (df["Load_act"]
+                             - df["Wind_act"] 
+                             - df["PV_act"] 
+                             - df["Tie_act"]
+                             - df["NonMarketNuclear_act"]
+                             - df["SelfSupplyUnits_act"]
+                             - df["LocalPowerPlant_act"])
         df["dNetLoad"] = df["NetLoad_act"] - df["NetLoad_fc"]
 
     return df
@@ -1986,7 +2020,7 @@ def parse_args() -> argparse.Namespace:
 
 def run_without_args() -> None:
     CONFIG = {
-        "cmd": "predict",  # "train" | "predict" | "backtest"
+        "cmd": "train",  # "train" | "predict" | "backtest"
         "history": r"data/价格预测数据集.csv",
         "model_dir": r"models_v2_6",
         "th_spike": 800.0,

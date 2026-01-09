@@ -56,8 +56,11 @@ import joblib
 # Excel output helper (bilingual header)
 try:
     import openpyxl  # type: ignore
+    from openpyxl.chart import LineChart, Reference  # type: ignore
 except Exception:  # pragma: no cover
     openpyxl = None  # type: ignore
+    LineChart = None  # type: ignore
+    Reference = None  # type: ignore
 
 from sklearn.ensemble import GradientBoostingRegressor, HistGradientBoostingClassifier
 from sklearn.dummy import DummyClassifier
@@ -262,10 +265,20 @@ COL_TIE_FC = "联络线受电负荷(预测)"
 COL_WIND_FC = "风电总加(预测)"
 COL_PV_FC = "光伏总加(预测)"
 
+# Additional load components that should be included in net load calculation
+COL_NON_MARKET_NUCLEAR_FC = "非市场化核电总加(预测)"
+COL_SELF_SUPPLY_UNITS_FC = "自备机组总加(预测)"
+COL_LOCAL_POWER_PLANT_FC = "地方电厂发电总加(预测)"
+
 COL_LOAD_ACT = "直调负荷(实际)"
 COL_TIE_ACT = "联络线受电负荷(实际)"
 COL_WIND_ACT = "风电总加(实际)"
 COL_PV_ACT = "光伏总加(实际)"
+
+# Additional actual load components
+COL_NON_MARKET_NUCLEAR_ACT = "非市场化核电总加(实际)"
+COL_SELF_SUPPLY_UNITS_ACT = "自备机组总加(实际)"
+COL_LOCAL_POWER_PLANT_ACT = "地方电厂发电总加(实际)"
 
 COL_PS_ACT = "抽蓄(实际)"  # 抽水蓄能(实际), MW, 正负含义以数据为准
 
@@ -426,8 +439,28 @@ def add_netload(df: pd.DataFrame, is_history: bool) -> pd.DataFrame:
     df["Tie_fc"] = df[COL_TIE_FC]
     df["Wind_fc"] = pd.to_numeric(df[COL_WIND_FC], errors="coerce")
     df["PV_fc"] = pd.to_numeric(df[COL_PV_FC], errors="coerce")
+    
+    # Add additional load components with fallback to 0 if not present
+    # Add additional generation / supply components (column missing or NaN -> 0.0)
+    for _src, _dst in [
+        (COL_NON_MARKET_NUCLEAR_FC, "NonMarketNuclear_fc"),
+        (COL_SELF_SUPPLY_UNITS_FC, "SelfSupplyUnits_fc"),
+        (COL_LOCAL_POWER_PLANT_FC, "LocalPowerPlant_fc"),
+    ]:
+        if _src in df.columns:
+            df[_dst] = pd.to_numeric(df[_src], errors="coerce").fillna(0.0)
+        else:
+            df[_dst] = 0.0
 
-    df["NetLoad_fc"] = df["Load_fc"] - df["Wind_fc"] - df["PV_fc"] - df["Tie_fc"]
+
+    # Updated net load calculation including additional components
+    df["NetLoad_fc"] = (df["Load_fc"] 
+                        - df["Wind_fc"] 
+                        - df["PV_fc"] 
+                        - df["Tie_fc"]
+                        - df["NonMarketNuclear_fc"]
+                        - df["SelfSupplyUnits_fc"]
+                        - df["LocalPowerPlant_fc"])
 
     if is_history:
         require_cols(df, [COL_LOAD_ACT, COL_TIE_ACT, COL_WIND_ACT, COL_PV_ACT], where="actual fields")
@@ -438,8 +471,28 @@ def add_netload(df: pd.DataFrame, is_history: bool) -> pd.DataFrame:
         df["Tie_act"] = df[COL_TIE_ACT]
         df["Wind_act"] = pd.to_numeric(df[COL_WIND_ACT], errors="coerce")
         df["PV_act"] = pd.to_numeric(df[COL_PV_ACT], errors="coerce")
+        
+        # Add additional actual load components with fallback to 0 if not present
+        # Add additional generation / supply components (column missing or NaN -> 0.0)
+        for _src, _dst in [
+            (COL_NON_MARKET_NUCLEAR_ACT, "NonMarketNuclear_act"),
+            (COL_SELF_SUPPLY_UNITS_ACT, "SelfSupplyUnits_act"),
+            (COL_LOCAL_POWER_PLANT_ACT, "LocalPowerPlant_act"),
+        ]:
+            if _src in df.columns:
+                df[_dst] = pd.to_numeric(df[_src], errors="coerce").fillna(0.0)
+            else:
+                df[_dst] = 0.0
 
-        df["NetLoad_act"] = df["Load_act"] - df["Wind_act"] - df["PV_act"] - df["Tie_act"]
+
+        # Updated actual net load calculation including additional components
+        df["NetLoad_act"] = (df["Load_act"]
+                             - df["Wind_act"] 
+                             - df["PV_act"] 
+                             - df["Tie_act"]
+                             - df["NonMarketNuclear_act"]
+                             - df["SelfSupplyUnits_act"]
+                             - df["LocalPowerPlant_act"])
         df["dNetLoad"] = df["NetLoad_act"] - df["NetLoad_fc"]
 
     return df
@@ -1598,6 +1651,295 @@ def _derive_trading_brief_path(out_path: str) -> str:
     return f"{base}_trading_brief{ext}"
 
 
+
+def _add_trading_brief_price_chart(
+    out_path: str,
+    sheet_table: str = "交易简表",
+    sheet_summary: str = "当日摘要",
+    anchor: str = "D2",
+) -> None:
+    """Insert an in-sheet line chart into the trading-brief workbook.
+    The chart uses existing columns in sheet '交易简表' and is placed on '当日摘要'.
+    Safe no-op if openpyxl chart components are unavailable.
+    """
+    if openpyxl is None or LineChart is None or Reference is None:
+        return
+    try:
+        wb = openpyxl.load_workbook(out_path)
+        if sheet_table not in wb.sheetnames or sheet_summary not in wb.sheetnames:
+            return
+        ws = wb[sheet_table]
+        ws_sum = wb[sheet_summary]
+
+        # Header map
+        headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)]
+        def _col(name: str) -> Optional[int]:
+            try:
+                return headers.index(name) + 1
+            except Exception:
+                return None
+
+        col_time = _col("时刻")
+        col_p50 = _col("主预测价P50(元/MWh)")
+        col_p90 = _col("风险上界P90(元/MWh)")
+        col_p10 = _col("风险下界P10(元/MWh)")
+        col_spike = _col("尖峰压力价P90(元/MWh)")
+
+        if not (col_time and col_p50 and col_p90 and col_p10):
+            return
+
+        max_row = ws.max_row
+
+        chart = LineChart()
+        chart.title = "实时价格预测曲线（P50 / P10 / P90）"
+        chart.y_axis.title = "元/MWh"
+        chart.x_axis.title = "时刻"
+        chart.legend.position = "r"
+        chart.width = 28
+        chart.height = 14
+
+        cats = Reference(ws, min_col=col_time, min_row=2, max_row=max_row)
+
+        for c in [col_p50, col_p10, col_p90]:
+            data = Reference(ws, min_col=c, min_row=1, max_row=max_row)
+            chart.add_data(data, titles_from_data=True)
+
+        # Optional: show spike-pressure price as marker-only series (if present)
+        if col_spike:
+            data = Reference(ws, min_col=col_spike, min_row=1, max_row=max_row)
+            chart.add_data(data, titles_from_data=True)
+            try:
+                s = chart.series[-1]
+                s.marker.symbol = "diamond"
+                s.marker.size = 6
+                s.graphicalProperties.line.noFill = True
+            except Exception:
+                pass
+
+        chart.set_categories(cats)
+        ws_sum.add_chart(chart, anchor)
+
+        # Add a short note if the area is blank
+        if ws_sum.cell(13, 1).value is None:
+            ws_sum.cell(13, 1).value = "图示：P50为主预测；P10/P90为风险区间；尖峰压力价仅在尖峰标记点展示（若有）。"
+
+        wb.save(out_path)
+    except Exception:
+        # Never fail the main export due to chart insertion issues
+        return
+
+def _configure_matplotlib_cjk_font() -> Optional[str]:
+    """Best-effort configure a CJK-capable font for matplotlib (Windows/Linux).
+    Returns the chosen font name (or None).
+    """
+    try:
+        import matplotlib as mpl
+        from matplotlib import font_manager as fm
+
+        # Common CJK fonts across Windows / macOS / Linux
+        candidates = [
+            "Microsoft YaHei",
+            "SimHei",
+            "PingFang SC",
+            "Noto Sans CJK SC",
+            "Noto Sans CJK JP",
+            "WenQuanYi Micro Hei",
+            "Source Han Sans SC",
+        ]
+        available = {f.name for f in fm.fontManager.ttflist}
+        for name in candidates:
+            if name in available:
+                mpl.rcParams["font.sans-serif"] = [name]
+                mpl.rcParams["axes.unicode_minus"] = False
+                return name
+        return None
+    except Exception:
+        return None
+
+
+def _make_trading_brief_chart_sheet(
+    out_path: str,
+    th_spike: Optional[float] = None,
+    th_neg: float = 0.0,
+    sheet_table: str = "交易简表",
+    sheet_chart: str = "图表",
+) -> None:
+    """Create a dedicated '图表' sheet with a richer matplotlib curve chart and remove other helper sheets.
+
+    The chart includes:
+    - P50 line
+    - P10–P90 risk band
+    - negative-price segments highlighted
+    - optional spike markers & spike threshold line
+    """
+    if openpyxl is None:
+        return
+
+    try:
+        import pandas as pd
+        import numpy as np
+        import matplotlib.pyplot as plt
+        import re
+        import os
+        from openpyxl.drawing.image import Image as XLImage
+        from openpyxl.styles import Font, Alignment
+    except Exception:
+        return
+
+    try:
+        df = pd.read_excel(out_path, sheet_name=sheet_table)
+        if df is None or len(df) == 0:
+            return
+
+        # Column discovery (robust to slight header changes)
+        def _find_col(rx: str) -> Optional[str]:
+            for c in df.columns:
+                if re.search(rx, str(c)):
+                    return c
+            return None
+
+        col_time = _find_col(r"时刻") or "时刻"
+        col_p50 = _find_col(r"P50") or _find_col(r"主预测")  # fallback
+        col_p10 = _find_col(r"P10")
+        col_p90 = _find_col(r"P90")  # the first P90 likely upper bound
+        col_spike_flag = _find_col(r"尖峰风险标记")
+        col_spike_p90 = _find_col(r"尖峰压力价P90")
+
+        if col_p50 is None or col_time not in df.columns:
+            return
+
+        times = df[col_time].astype(str).tolist()
+        p50 = pd.to_numeric(df[col_p50], errors="coerce").values.astype(float)
+        p10 = pd.to_numeric(df[col_p10], errors="coerce").values.astype(float) if col_p10 else None
+        p90 = pd.to_numeric(df[col_p90], errors="coerce").values.astype(float) if col_p90 else None
+
+        spike_flag = pd.to_numeric(df[col_spike_flag], errors="coerce").fillna(0).astype(int).values if col_spike_flag else None
+        spike_p90 = pd.to_numeric(df[col_spike_p90], errors="coerce").values.astype(float) if col_spike_p90 else None
+
+        # Configure CJK font (best effort)
+        _configure_matplotlib_cjk_font()
+
+        x = np.arange(len(times))
+        fig = plt.figure(figsize=(14, 6))
+
+        if p10 is not None and p90 is not None:
+            plt.fill_between(x, p10, p90, alpha=0.18, label="风险区间 P10–P90")
+
+        plt.plot(x, p50, linewidth=2.0, label="主预测价 P50")
+
+        # Spike markers
+        if spike_flag is not None and spike_p90 is not None and int(np.nansum(spike_flag)) > 0:
+            idx = np.where(spike_flag == 1)[0]
+            plt.scatter(idx, spike_p90[idx], marker="D", s=40, label="尖峰压力价 P90（标记点）")
+
+        # Reference lines
+        plt.axhline(float(th_neg), linewidth=1.2, linestyle="--", label=f"{th_neg:g} 元/MWh（负价分界）")
+        # Only show spike threshold if it is not too far above current range,
+        # otherwise it will compress the visible curve and reduce readability.
+        if th_spike is not None and np.isfinite(th_spike):
+            show_spike_th = False
+            if spike_flag is not None and int(np.nansum(spike_flag)) > 0:
+                show_spike_th = True
+            elif p90 is not None and np.isfinite(p90).any():
+                if float(th_spike) <= float(np.nanmax(p90)) * 1.20:
+                    show_spike_th = True
+            if show_spike_th:
+                plt.axhline(float(th_spike), linewidth=1.0, linestyle=":", label=f"{th_spike:g} 元/MWh（尖峰阈值）")
+
+        # Highlight negative segments (based on P50)
+        neg_idx = np.where(p50 < float(th_neg))[0]
+        if len(neg_idx) > 0:
+            spans = []
+            start = int(neg_idx[0])
+            prev = int(neg_idx[0])
+            for i in neg_idx[1:]:
+                i = int(i)
+                if i == prev + 1:
+                    prev = i
+                else:
+                    spans.append((start, prev))
+                    start = prev = i
+            spans.append((start, prev))
+            for (a, b) in spans:
+                plt.axvspan(a - 0.5, b + 0.5, alpha=0.08)
+
+        # Hour ticks for clarity
+        tick_idx = [i for i, t in enumerate(times) if re.match(r"^\d{2}:00$", str(t))]
+        if "24:00" in times:
+            tick_idx = [i for i in tick_idx if times[i] != "24:00"] + [times.index("24:00")]
+        tick_labels = [times[i] for i in tick_idx]
+        plt.xticks(tick_idx, tick_labels, rotation=45, ha="right")
+
+        plt.grid(True, alpha=0.25)
+        plt.xlabel("时刻（15分钟）")
+        plt.ylabel("元/MWh")
+
+        # Title: try to use '日期' column if present
+        date_str = None
+        if "日期" in df.columns:
+            date_str = str(df["日期"].iloc[0])[:10]
+        title = f"{date_str or ''} 实时价格预测（含风险区间、负价段高亮、尖峰标记）".strip()
+        plt.title(title)
+
+        # Annotate max/min
+        if np.isfinite(p50).any():
+            imax = int(np.nanargmax(p50))
+            imin = int(np.nanargmin(p50))
+            plt.scatter([imax, imin], [p50[imax], p50[imin]], s=50)
+            plt.annotate(f"最高 {p50[imax]:.1f}\n{times[imax]}", (imax, p50[imax]), textcoords="offset points", xytext=(10, 10))
+            plt.annotate(f"最低 {p50[imin]:.1f}\n{times[imin]}", (imin, p50[imin]), textcoords="offset points", xytext=(10, -30))
+
+        plt.legend(loc="upper right")
+        plt.margins(x=0.01)
+        plt.tight_layout()
+
+        png_path = os.path.splitext(out_path)[0] + "_chart.png"
+        plt.savefig(png_path, dpi=200)
+        plt.close(fig)
+
+        # Now embed into Excel on a new sheet named '图表', and remove other helper sheets
+        wb = openpyxl.load_workbook(out_path)
+
+        # remove all sheets except the main table
+        for sname in list(wb.sheetnames):
+            if sname != sheet_table and sname != sheet_chart:
+                wb.remove(wb[sname])
+
+        # recreate chart sheet at position 2
+        if sheet_chart in wb.sheetnames:
+            wb.remove(wb[sheet_chart])
+        ws_chart = wb.create_sheet(sheet_chart, 1)
+
+        # Summary text
+        ws_chart["A1"] = (date_str or "") + " D+1 实时价格预测图（交易简报）"
+        ws_chart["A1"].font = Font(size=14, bold=True)
+        ws_chart["A1"].alignment = Alignment(horizontal="left", vertical="center")
+
+        neg_cnt = int(np.nansum(p50 < float(th_neg)))
+        spike_cnt = int(np.nansum(spike_flag)) if spike_flag is not None else 0
+        max_val = float(np.nanmax(p50)); max_t = times[int(np.nanargmax(p50))]
+        min_val = float(np.nanmin(p50)); min_t = times[int(np.nanargmin(p50))]
+
+        ws_chart["A2"] = f"P50 最高值：{max_val:.1f} 元/MWh（{max_t}）；最低值：{min_val:.1f} 元/MWh（{min_t}）"
+        ws_chart["A3"] = f"负价点数：{neg_cnt} / {len(p50)}（约 {neg_cnt/4:.2f} 小时）；尖峰标记点数：{spike_cnt} / {len(p50)}"
+        ws_chart["A2"].font = Font(size=11)
+        ws_chart["A3"].font = Font(size=11)
+
+        # Insert image
+        img = XLImage(png_path)
+        img.width = 1200
+        img.height = 520
+        ws_chart.add_image(img, "A5")
+        ws_chart.column_dimensions["A"].width = 120
+
+        wb.save(out_path)
+
+    except Exception:
+        # Do not break the main export due to chart-sheet rendering issues
+        return
+
+
+
 def export_trading_brief_excel(
     df_out: pd.DataFrame,
     out_path: str,
@@ -1609,8 +1951,7 @@ def export_trading_brief_excel(
     """
     Export a compact Excel for the trading desk.
     - Sheet1: 交易简表 (96 rows)
-    - Sheet2: 当日摘要
-    - Sheet3: 字段与用法
+    - Sheet2: 图表（曲线图，给交易团队更直观地看趋势/风险区间/负价段/尖峰标记）
     """
     df = df_out.copy()
 
@@ -1691,8 +2032,9 @@ def export_trading_brief_excel(
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with pd.ExcelWriter(out_path, engine="openpyxl") as w:
         brief.to_excel(w, sheet_name="交易简表", index=False)
-        df_summary.to_excel(w, sheet_name="当日摘要", index=False)
-        df_guide.to_excel(w, sheet_name="字段与用法", index=False)
+
+    # Build a dedicated chart sheet, and remove other helper sheets (per trading-desk preference)
+    _make_trading_brief_chart_sheet(out_path, th_spike=th_spike, th_neg=th_neg)
 
 # =========================
 # Backtest (evaluation)
@@ -1737,6 +2079,11 @@ def backtest_dates(
     hist = read_table(history_path)
     hist = add_slot_calendar(hist)
     require_cols(hist, [COL_LOAD_FC, COL_TIE_FC, COL_WIND_FC, COL_PV_FC, COL_RT], where="history backtest base")
+    # Ensure optional generation columns exist for consistent NetLoad_fc (missing -> 0.0)
+    for _c in [COL_NON_MARKET_NUCLEAR_FC, COL_SELF_SUPPLY_UNITS_FC, COL_LOCAL_POWER_PLANT_FC]:
+        if _c not in hist.columns:
+            hist[_c] = 0.0
+
     hist[COL_RT] = pd.to_numeric(hist[COL_RT], errors="coerce")
     hist["时刻"] = hist["time_str"]
 
@@ -1763,7 +2110,11 @@ def backtest_dates(
             print(f"[WARN] date not found in history: {d}")
             continue
 
-        df_fc = df_day[[COL_DATE, "时刻", COL_HOL, COL_WKND, COL_LOAD_FC, COL_TIE_FC, COL_WIND_FC, COL_PV_FC]].copy()
+        df_fc = df_day[[
+            COL_DATE, "时刻", COL_HOL, COL_WKND,
+            COL_LOAD_FC, COL_TIE_FC, COL_WIND_FC, COL_PV_FC,
+            COL_NON_MARKET_NUCLEAR_FC, COL_SELF_SUPPLY_UNITS_FC, COL_LOCAL_POWER_PLANT_FC,
+        ]].copy()
 
         tmp_fc_path = os.path.join(os.path.dirname(out_path) or ".", f"__tmp_forecast_{d}.xlsx")
         with pd.ExcelWriter(tmp_fc_path, engine="openpyxl") as w:
@@ -1991,10 +2342,10 @@ def run_without_args() -> None:
         "model_dir": r"models_v2_6",
         "th_spike": 800.0,
         "th_neg": 0.0,
-        "ps_alpha": 0.6,  # pumped-storage effect damping (0..1)
+        "ps_alpha": 0.45,  # pumped-storage effect damping (0..1)
 
         # gate thresholds
-        "p_gate_spike": 0.025,
+        "p_gate_spike": 0.03,
         "p_gate_neg": 0.30,  # tune here or pass --p_gate_neg
         "p_full_neg": 0.55,  # ramp gate full neg prob (<=p_gate_neg => hard gate)
 
@@ -2007,22 +2358,22 @@ def run_without_args() -> None:
         "spike_budget_min_gap": 4,
         "spike_apply_to_p50": 0,  # 0=稳健(不改p50); 1=让尖峰预算影响RT_gate_p50
 
-        "arm_day_neg": 0.65,  # 日级激活阈值：只有 max(p_neg) >= 0.65 才允许负价门控
+        "arm_day_neg": 0.60,  # 日级激活阈值：只有 max(p_neg) >= 0.65 才允许负价门控
         "arm_day_neg_use_or": 1,  # 1=OR
         "arm_day_neg_pv_th": 9000,  # PV 日最大值阈值（MW）：适当下调，避免冬季负价日被 PV 条件卡死
-        "arm_day_neg_netload_min_th": 24500,  # NetLoad_eff 日最小值阈值（MW）：从 7000 提到合理量级（核心）
+        "arm_day_neg_netload_min_th": 23500,  # NetLoad_eff 日最小值阈值（MW）：从 7000 提到合理量级（核心）
 
         # predict
-        "forecast": r"forecast_input_2026-01-06.xlsx",
-        "date": "2026-01-06",
-        "out": r"outPut/forcast_2026-01-06.xlsx",
+        "forecast": r"forecast_input_2026-01-10.xlsx",
+        "date": "2026-01-10",
+        "out": r"outPut/forcast_2026-01-10.xlsx",
         "trading_brief": 1,
         "trading_out": r"",
 
 
         # backtest
-        "dates": "2025-11-08,2024-09-19,2025-10-08,2024-09-13,2024-03-04,2025-03-04,2024-06-21,2025-06-19,2025-05-01,2025-04-21,2024-03-28,2024-02-16,2024-02-12,2024-02-17,2024-11-27,2024-11-26,2024-11-28,2025-07-12,2024-11-24,2025-01-02,2024-04-13,2024-03-20,2024-01-21,2024-10-02,2024-06-08,2024-07-03,2025-01-28,2025-01-07,2024-12-30,2024-01-12,2024-02-02,2025-03-01,2025-05-09,2024-06-15,2024-07-01,2024-08-06,2024-09-03,2025-12-18, 2025-12-22, 2025-12-25, 2025-12-29, 2025-12-30,,2026-01-01, 2026-01-02, 2026-01-03, 2026-01-04, 2026-01-05",
-        "report_out": r"outPut/bt_S025_N1.xlsx",
+        "dates": "2026-01-07,2026-01-03,2026-01-02,2026-01-01,2025-12-31,2025-12-30,2025-12-29,2025-12-28,2025-12-26,2025-12-25,2025-12-22,2025-12-13,2025-11-08,2025-10-30,2025-10-15,2025-10-12,2025-10-08,2025-10-05,2025-10-04,2025-09-21,2026-01-04,2025-12-12,2025-12-10,2025-12-09,2025-11-07,2025-11-06,2025-10-31,2025-10-26,2025-10-25,2025-10-13",
+        "report_out": r"outPut/bt_202601091109.xlsx",
     }
 
     if CONFIG["cmd"] == "train":

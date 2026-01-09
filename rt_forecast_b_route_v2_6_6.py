@@ -262,10 +262,20 @@ COL_TIE_FC = "联络线受电负荷(预测)"
 COL_WIND_FC = "风电总加(预测)"
 COL_PV_FC = "光伏总加(预测)"
 
+# Additional load components that should be included in net load calculation
+COL_NON_MARKET_NUCLEAR_FC = "非市场化核电总加(预测)"
+COL_SELF_SUPPLY_UNITS_FC = "自备机组总加(预测)"
+COL_LOCAL_POWER_PLANT_FC = "地方电厂发电总加(预测)"
+
 COL_LOAD_ACT = "直调负荷(实际)"
 COL_TIE_ACT = "联络线受电负荷(实际)"
 COL_WIND_ACT = "风电总加(实际)"
 COL_PV_ACT = "光伏总加(实际)"
+
+# Additional actual load components
+COL_NON_MARKET_NUCLEAR_ACT = "非市场化核电总加(实际)"
+COL_SELF_SUPPLY_UNITS_ACT = "自备机组总加(实际)"
+COL_LOCAL_POWER_PLANT_ACT = "地方电厂发电总加(实际)"
 
 COL_PS_ACT = "抽蓄(实际)"  # 抽水蓄能(实际), MW, 正负含义以数据为准
 
@@ -426,8 +436,28 @@ def add_netload(df: pd.DataFrame, is_history: bool) -> pd.DataFrame:
     df["Tie_fc"] = df[COL_TIE_FC]
     df["Wind_fc"] = pd.to_numeric(df[COL_WIND_FC], errors="coerce")
     df["PV_fc"] = pd.to_numeric(df[COL_PV_FC], errors="coerce")
+    
+    # Add additional load components with fallback to 0 if not present
+    # Add additional generation / supply components (column missing or NaN -> 0.0)
+    for _src, _dst in [
+        (COL_NON_MARKET_NUCLEAR_FC, "NonMarketNuclear_fc"),
+        (COL_SELF_SUPPLY_UNITS_FC, "SelfSupplyUnits_fc"),
+        (COL_LOCAL_POWER_PLANT_FC, "LocalPowerPlant_fc"),
+    ]:
+        if _src in df.columns:
+            df[_dst] = pd.to_numeric(df[_src], errors="coerce").fillna(0.0)
+        else:
+            df[_dst] = 0.0
 
-    df["NetLoad_fc"] = df["Load_fc"] - df["Wind_fc"] - df["PV_fc"] - df["Tie_fc"]
+
+    # Updated net load calculation including additional components
+    df["NetLoad_fc"] = (df["Load_fc"] 
+                        - df["Wind_fc"] 
+                        - df["PV_fc"] 
+                        - df["Tie_fc"]
+                        - df["NonMarketNuclear_fc"]
+                        - df["SelfSupplyUnits_fc"]
+                        - df["LocalPowerPlant_fc"])
 
     if is_history:
         require_cols(df, [COL_LOAD_ACT, COL_TIE_ACT, COL_WIND_ACT, COL_PV_ACT], where="actual fields")
@@ -438,8 +468,28 @@ def add_netload(df: pd.DataFrame, is_history: bool) -> pd.DataFrame:
         df["Tie_act"] = df[COL_TIE_ACT]
         df["Wind_act"] = pd.to_numeric(df[COL_WIND_ACT], errors="coerce")
         df["PV_act"] = pd.to_numeric(df[COL_PV_ACT], errors="coerce")
+        
+        # Add additional actual load components with fallback to 0 if not present
+        # Add additional generation / supply components (column missing or NaN -> 0.0)
+        for _src, _dst in [
+            (COL_NON_MARKET_NUCLEAR_ACT, "NonMarketNuclear_act"),
+            (COL_SELF_SUPPLY_UNITS_ACT, "SelfSupplyUnits_act"),
+            (COL_LOCAL_POWER_PLANT_ACT, "LocalPowerPlant_act"),
+        ]:
+            if _src in df.columns:
+                df[_dst] = pd.to_numeric(df[_src], errors="coerce").fillna(0.0)
+            else:
+                df[_dst] = 0.0
 
-        df["NetLoad_act"] = df["Load_act"] - df["Wind_act"] - df["PV_act"] - df["Tie_act"]
+
+        # Updated actual net load calculation including additional components
+        df["NetLoad_act"] = (df["Load_act"]
+                             - df["Wind_act"] 
+                             - df["PV_act"] 
+                             - df["Tie_act"]
+                             - df["NonMarketNuclear_act"]
+                             - df["SelfSupplyUnits_act"]
+                             - df["LocalPowerPlant_act"])
         df["dNetLoad"] = df["NetLoad_act"] - df["NetLoad_fc"]
 
     return df
@@ -1737,6 +1787,11 @@ def backtest_dates(
     hist = read_table(history_path)
     hist = add_slot_calendar(hist)
     require_cols(hist, [COL_LOAD_FC, COL_TIE_FC, COL_WIND_FC, COL_PV_FC, COL_RT], where="history backtest base")
+    # Ensure optional generation columns exist for consistent NetLoad_fc (missing -> 0.0)
+    for _c in [COL_NON_MARKET_NUCLEAR_FC, COL_SELF_SUPPLY_UNITS_FC, COL_LOCAL_POWER_PLANT_FC]:
+        if _c not in hist.columns:
+            hist[_c] = 0.0
+
     hist[COL_RT] = pd.to_numeric(hist[COL_RT], errors="coerce")
     hist["时刻"] = hist["time_str"]
 
@@ -1763,7 +1818,11 @@ def backtest_dates(
             print(f"[WARN] date not found in history: {d}")
             continue
 
-        df_fc = df_day[[COL_DATE, "时刻", COL_HOL, COL_WKND, COL_LOAD_FC, COL_TIE_FC, COL_WIND_FC, COL_PV_FC]].copy()
+        df_fc = df_day[[
+            COL_DATE, "时刻", COL_HOL, COL_WKND,
+            COL_LOAD_FC, COL_TIE_FC, COL_WIND_FC, COL_PV_FC,
+            COL_NON_MARKET_NUCLEAR_FC, COL_SELF_SUPPLY_UNITS_FC, COL_LOCAL_POWER_PLANT_FC,
+        ]].copy()
 
         tmp_fc_path = os.path.join(os.path.dirname(out_path) or ".", f"__tmp_forecast_{d}.xlsx")
         with pd.ExcelWriter(tmp_fc_path, engine="openpyxl") as w:
@@ -1986,12 +2045,12 @@ def parse_args() -> argparse.Namespace:
 
 def run_without_args() -> None:
     CONFIG = {
-        "cmd": "predict",  # "train" | "predict" | "backtest"
+        "cmd": "backtest",  # "train" | "predict" | "backtest"
         "history": r"data/价格预测数据集.csv",
         "model_dir": r"models_v2_6",
         "th_spike": 800.0,
         "th_neg": 0.0,
-        "ps_alpha": 0.6,  # pumped-storage effect damping (0..1)
+        "ps_alpha": 0.0,  # pumped-storage effect damping (0..1)
 
         # gate thresholds
         "p_gate_spike": 0.025,
@@ -2007,7 +2066,7 @@ def run_without_args() -> None:
         "spike_budget_min_gap": 4,
         "spike_apply_to_p50": 0,  # 0=稳健(不改p50); 1=让尖峰预算影响RT_gate_p50
 
-        "arm_day_neg": 0.65,  # 日级激活阈值：只有 max(p_neg) >= 0.65 才允许负价门控
+        "arm_day_neg": 0.60,  # 日级激活阈值：只有 max(p_neg) >= 0.65 才允许负价门控
         "arm_day_neg_use_or": 1,  # 1=OR
         "arm_day_neg_pv_th": 9000,  # PV 日最大值阈值（MW）：适当下调，避免冬季负价日被 PV 条件卡死
         "arm_day_neg_netload_min_th": 24500,  # NetLoad_eff 日最小值阈值（MW）：从 7000 提到合理量级（核心）
@@ -2021,8 +2080,9 @@ def run_without_args() -> None:
 
 
         # backtest
-        "dates": "2025-11-08,2024-09-19,2025-10-08,2024-09-13,2024-03-04,2025-03-04,2024-06-21,2025-06-19,2025-05-01,2025-04-21,2024-03-28,2024-02-16,2024-02-12,2024-02-17,2024-11-27,2024-11-26,2024-11-28,2025-07-12,2024-11-24,2025-01-02,2024-04-13,2024-03-20,2024-01-21,2024-10-02,2024-06-08,2024-07-03,2025-01-28,2025-01-07,2024-12-30,2024-01-12,2024-02-02,2025-03-01,2025-05-09,2024-06-15,2024-07-01,2024-08-06,2024-09-03,2025-12-18, 2025-12-22, 2025-12-25, 2025-12-29, 2025-12-30,,2026-01-01, 2026-01-02, 2026-01-03, 2026-01-04, 2026-01-05",
-        "report_out": r"outPut/bt_S025_N1.xlsx",
+
+        "dates": "2026-01-07,2026-01-03,2026-01-02,2026-01-01,2025-12-31,2025-12-30,2025-12-29,2025-12-28,2025-12-26,2025-12-25,2025-12-22,2025-12-13,2025-11-08,2025-10-30,2025-10-15,2025-10-12,2025-10-08,2025-10-05,2025-10-04,2025-09-21,2026-01-04,2025-12-12,2025-12-10,2025-12-09,2025-11-07,2025-11-06,2025-10-31,2025-10-26,2025-10-25,2025-10-13",
+        "report_out": r"outPut/backtest_ps_alpha00.xlsx",
     }
 
     if CONFIG["cmd"] == "train":
