@@ -61,7 +61,7 @@ pip install -e .
 
 ### 1. 数据准备
 
-将电价数据放置于 `data/` 目录下，格式参见下方 [数据格式](#数据格式) 章节。
+将电价数据放置于 `data/` 目录下，格式参见下方 [数据格式](#数据格式) 章节。当前仓库包含山东市场聚合运行数据样例；数据隐私与公开说明见 [docs/data_privacy.md](docs/data_privacy.md)。
 
 ### 2. 训练模型
 
@@ -102,6 +102,18 @@ python3 rt_forecast_b_route_v2_6_9_annotated.py --help
 
 ---
 
+## 数据获取
+
+`getData/` 目录下的脚本用于从市场平台拉取运行数据。认证信息必须通过环境变量提供，不应写入代码或提交到仓库：
+
+```bash
+export SGCC_TOKEN="your-token"
+export SGCC_SESSIONID="your-session-id"
+python3 getData/run_市场运行数据用电侧.py
+```
+
+---
+
 ## 数据格式
 
 项目当前示例数据使用 CSV/XLSX 格式，15 分钟粒度，每日 96 个时段。核心字段包括：
@@ -118,7 +130,7 @@ python3 rt_forecast_b_route_v2_6_9_annotated.py --help
 | `日前价格` | float | 日前价格 |
 | `实时价格` | float | 实时价格，训练/回测目标 |
 
-更多可选特征字段请参考 `docs/data_schema.md`（规划中）。
+更多字段和公开数据说明见 [docs/data_privacy.md](docs/data_privacy.md)。
 
 ---
 
@@ -133,6 +145,12 @@ python3 rt_forecast_b_route_v2_6_9_annotated.py --help
 | `output/logs/` | 运行日志 |
 
 Excel 报告通常包含：预测值 vs 实际值对比、误差统计（MAE / RMSE / MAPE）、分时段精度分析、极端事件命中率等。
+
+---
+
+## 仓库结构
+
+当前仓库保留了主预测脚本、历史脚本和样例数据，并正在逐步迁移为标准 Python package。目录结构说明见 [docs/repository_structure.md](docs/repository_structure.md)。
 
 ---
 

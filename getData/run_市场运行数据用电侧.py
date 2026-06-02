@@ -58,8 +58,11 @@ def main():
     # parser.add_argument('-f','--folder', required=True, help='The folder to save downloaded files.')
     # args = parser.parse_args()
 
-    token = '1cfb8ae49a7d81180a7486c45a131517f5504adc53c2e114fb72ae47f71523ef762caff4ec6328a2fa0aa3d506f9514b.9872df638a4d88f1e05cf850514a856b90ac0cbb'
-    sessionid = '4c94b0cc-bebd-4fb0-9ce5-62aee60c2ac4'
+    # Credentials must be provided via environment variables
+    token = os.environ.get('SGCC_TOKEN', '')
+    sessionid = os.environ.get('SGCC_SESSIONID', '')
+    if not token or not sessionid:
+        raise RuntimeError("请设置环境变量 SGCC_TOKEN 和 SGCC_SESSIONID")
     folder = '市场运行数据用电侧'
 
     session = create_session(token, sessionid)
