@@ -1,0 +1,34 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (large files — uncomment to exclude from repo)
+# data/
+# old/backtest_outputs/
+# old/oct_2024_daily_plots/
+# old/oct_2025_daily_plots/
+
+# Downloaded market data folders
+市场运行数据用电侧/
+负荷信息预测/
+一次市场运行数据用电侧/
