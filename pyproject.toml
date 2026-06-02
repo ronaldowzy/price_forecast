@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "price-forecast-cn"
+version = "0.1.0"
+description = "Route-B RT price forecasting (15-min, 96 pts/day) for Shandong power market"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    { name = "ronaldowzy" },
+]
+dependencies = [
+    "pandas>=1.5",
+    "numpy>=1.23",
+    "scikit-learn>=1.2",
+    "joblib>=1.2",
+    "openpyxl>=3.0",
+]
+
+[project.scripts]
+price-forecast = "price_forecast.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ronaldowzy/price_forecast"
+Repository = "https://github.com/ronaldowzy/price_forecast"
+
+[tool.setuptools.packages.find]
+where = ["src"]
